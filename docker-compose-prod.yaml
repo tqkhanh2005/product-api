@@ -1,0 +1,49 @@
+version: "3.9"
+
+# Used after CD has pushed an image to Docker Hub (see .github/workflows/cd-dockerhub.yml).
+# Usage: DOCKERHUB_USERNAME=<you> IMAGE_TAG=latest docker compose -f docker-compose-prod.yaml up -d
+
+services:
+  nammongodb:
+    image: mongo:7
+    container_name: nammongodb
+    restart: unless-stopped
+    volumes:
+      - mongo-data-prod:/data/db
+    networks:
+      - product-net-prod
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  product-api:
+    image: "${DOCKERHUB_USERNAME:?set DOCKERHUB_USERNAME}/product-api:${IMAGE_TAG:-latest}"
+    container_name: product-api
+    restart: unless-stopped
+    environment:
+      MONGO_URI: mongodb://nammongodb:27017/product-api
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      nammongodb:
+        condition: service_healthy
+    networks:
+      - product-net-prod
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  product-net-prod:
+    driver: bridge
+
+volumes:
+  mongo-data-prod:
