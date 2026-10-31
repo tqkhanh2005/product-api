@@ -1,4 +1,4 @@
-version: "3.9"
+name: product-api
 
 # Used after CD has pushed an image to Docker Hub (see .github/workflows/cd-dockerhub.yml).
 # Usage: DOCKERHUB_USERNAME=<you> IMAGE_TAG=latest docker compose -f docker-compose-prod.yaml up -d
@@ -9,7 +9,7 @@ services:
     container_name: nammongodb
     restart: unless-stopped
     volumes:
-      - mongo-data-prod:/data/db
+      - mongo-data:/data/db
     networks:
       - product-net-prod
     healthcheck:
@@ -28,7 +28,7 @@ services:
       NODE_ENV: production
       PORT: 3000
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${HOST_PORT:-3000}:3000"
     depends_on:
       nammongodb:
         condition: service_healthy
@@ -46,4 +46,4 @@ networks:
     driver: bridge
 
 volumes:
-  mongo-data-prod:
+  mongo-data:

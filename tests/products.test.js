@@ -1,11 +1,7 @@
 const request = require('supertest');
 
-// No MongoDB server is reachable from this environment (documented in
-// docs/REQUIREMENTS_CHECKLIST.md), so the Mongoose Product model is mocked here.
-// This still exercises the real Express app, real route/validation/error-handling
-// code — only the persistence layer is a test double. Live-DB integration is run
-// by the GitHub Actions workflow (test-productci-prod.yml), which has a real
-// `mongodb` service container.
+// Unit tests exercise the real Express routes and validation with a model mock.
+// Separate integration tests run against real MongoDB in Compose and CI.
 jest.mock('../src/models/Product');
 const Product = require('../src/models/Product');
 const { createApp } = require('../src/app');

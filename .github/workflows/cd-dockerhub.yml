@@ -1,108 +1,84 @@
 name: cd-dockerhub
-
-# Continuous Deployment: GitHub Actions -> Docker Hub -> local Docker Engine.
-# Requested in Prompt 1, items 12-14.
-#
-# Required GitHub Secrets (Settings -> Secrets and variables -> Actions):
-#   DOCKERHUB_USERNAME   your Docker Hub username
-#   DOCKERHUB_TOKEN      a Docker Hub access token (not your password)
-# See docs/DEPLOYMENT_GUIDE.md for how to create these.
-#
-# This workflow only pushes an image AFTER the healthcheck job proves the
-# freshly built image boots and reports /api/health = UP against a real
-# MongoDB service container. No push happens on a failing healthcheck.
-
 on:
   push:
     branches: [main]
-    paths:
-      - "phase1-product-api/**"
-  workflow_dispatch: {}
-
-defaults:
-  run:
-    working-directory: phase1-product-api
-
+  workflow_dispatch:
+    inputs:
+      deploy_local:
+        description: Deploy verified image on the registered local Windows runner
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: product-api-release
+  cancel-in-progress: false
 jobs:
-  build-and-verify:
+  verify-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
     services:
       mongodb:
         image: mongo:7
-        ports:
-          - 27017:27017
+        ports: ['27017:27017']
         options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\")'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-    outputs:
-      image_tag: ${{ steps.meta.outputs.tag }}
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      MONGO_URI: mongodb://localhost:27017/product-api-test-cd
     steps:
       - uses: actions/checkout@v4
-
-      - name: Compute image tag (short SHA)
-        id: meta
-        run: echo "tag=$(echo ${GITHUB_SHA} | cut -c1-7)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image (local, not pushed yet)
-        uses: docker/build-push-action@v6
+      - uses: actions/setup-node@v4
         with:
-          context: phase1-product-api
-          load: true
-          tags: product-api:ci-${{ steps.meta.outputs.tag }}
-
-      - name: Run the built image and verify /api/health = UP
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run test:integration
+      - name: Build and verify the exact image to publish
         run: |
-          docker network create ci-net
-          docker network connect ci-net "$(docker ps --filter "ancestor=mongo:7" --format '{{.ID}}')" || true
-          docker run -d --name ci-product-api --network ci-net \
-            -e MONGO_URI="mongodb://$(docker ps --filter "ancestor=mongo:7" --format '{{.Names}}'):27017/product-api-ci" \
-            -p 3000:3000 product-api:ci-${{ steps.meta.outputs.tag }}
-          for i in $(seq 1 15); do
-            if curl -fsS http://localhost:3000/api/health | grep -q '"status":"UP"'; then
-              echo "Healthcheck OK — safe to push"
-              exit 0
-            fi
-            echo "Waiting for container to be healthy... ($i)"
-            sleep 2
-          done
-          echo "Healthcheck FAILED — aborting deployment, image will NOT be pushed"
-          docker logs ci-product-api || true
-          exit 1
-
-  push-to-dockerhub:
-    needs: build-and-verify
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+          cp .env.example .env
+          docker compose up -d --build --wait --wait-timeout 180
+          curl -fsS http://localhost:3000/api/health
+      - id: meta
+        run: echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: phase1-product-api
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/product-api:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/product-api:${{ needs.build-and-verify.outputs.image_tag }}
-
-  deploy-local-instructions:
-    needs: push-to-dockerhub
-    runs-on: ubuntu-latest
-    steps:
-      - name: Print instructions for local deployment
+      - name: Publish the already-tested image (no rebuild)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          echo "Image pushed. On your machine with Docker Engine running:"
-          echo "  DOCKERHUB_USERNAME=<your-dockerhub-username> ./phase1-product-api/scripts/deploy-local.sh"
+          docker tag product-api:local "$DOCKERHUB_USERNAME/product-api:$IMAGE_TAG"
+          docker tag product-api:local "$DOCKERHUB_USERNAME/product-api:latest"
+          docker push "$DOCKERHUB_USERNAME/product-api:$IMAGE_TAG"
+          docker push "$DOCKERHUB_USERNAME/product-api:latest"
+      - if: always()
+        run: docker compose logs --no-color --tail 100
+      - if: always()
+        run: docker compose down
+  deploy-local:
+    needs: verify-and-push
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.deploy_local) || vars.ENABLE_LOCAL_CD == 'true')
+    runs-on: [self-hosted, Windows, p1-deploy]
+    timeout-minutes: 15
+    environment: local-demo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull verified image and deploy on local Docker Engine
+        shell: pwsh
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE_TAG: ${{ needs.verify-and-push.outputs.tag }}
+        run: |
+          $env:DOCKERHUB_TOKEN | docker login --username $env:DOCKERHUB_USERNAME --password-stdin
+          if ($LASTEXITCODE -ne 0) { throw 'Docker Hub login failed' }
+          ./scripts/deploy-local.ps1

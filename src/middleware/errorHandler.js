@@ -9,6 +9,8 @@ class ApiError extends Error {
 // Translates Mongoose/Mongo errors + ApiError into a consistent HTTP response.
 // Never leaks stack traces or internal details in production.
 function errorHandler(err, req, res, _next) {
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Bad Request', message: 'Malformed JSON' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Payload Too Large' });
   // Duplicate key (unique index violation) -> 409
   if (err.code === 11000) {
     return res.status(409).json({

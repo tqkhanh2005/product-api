@@ -10,20 +10,25 @@ function asyncHandler(fn) {
 
 function validateProductBody(body, { partial = false } = {}) {
   const errors = [];
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return ['Body must be a JSON object'];
+  const allowed = partial ? ['pname', 'price', 'quantity'] : ['pid', 'pname', 'price', 'quantity'];
+  if (Object.keys(body).some(k => !allowed.includes(k))) errors.push('Unknown product field');
+  if (partial && Object.keys(body).length === 0) errors.push('Update must not be empty');
+  if (!partial && body.pid !== undefined && (!Number.isSafeInteger(body.pid) || body.pid < 1)) errors.push('pid must be a positive safe integer');
   const { pname, price, quantity } = body;
 
   if (!partial || pname !== undefined) {
-    if (typeof pname !== 'string' || pname.trim().length === 0) {
+    if (typeof pname !== 'string' || pname.trim().length === 0 || pname.trim().length > 100) {
       errors.push('pname is required and must be a non-empty string');
     }
   }
   if (!partial || price !== undefined) {
-    if (typeof price !== 'number' || Number.isNaN(price) || price < 0) {
+    if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) {
       errors.push('price is required and must be a non-negative number');
     }
   }
   if (!partial || quantity !== undefined) {
-    if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 0) {
+    if (typeof quantity !== 'number' || !Number.isSafeInteger(quantity) || quantity < 0) {
       errors.push('quantity is required and must be a non-negative integer');
     }
   }
@@ -45,7 +50,7 @@ router.get(
   '/products/:pid',
   asyncHandler(async (req, res) => {
     const pid = Number(req.params.pid);
-    if (!Number.isInteger(pid)) {
+    if (!Number.isSafeInteger(pid) || pid < 1 || !/^\d+$/.test(req.params.pid)) {
       throw new ApiError(400, 'pid must be an integer');
     }
     const product = await Product.findOne({ pid });
@@ -66,6 +71,7 @@ router.post(
     }
 
     const pid = req.body.pid !== undefined ? Number(req.body.pid) : await Product.getNextPid();
+    if (req.body.pid !== undefined) await Product.advancePid(pid);
     const product = await Product.create({
       pid,
       pname: req.body.pname.trim(),
@@ -81,7 +87,7 @@ router.put(
   '/products/:pid',
   asyncHandler(async (req, res) => {
     const pid = Number(req.params.pid);
-    if (!Number.isInteger(pid)) {
+    if (!Number.isSafeInteger(pid) || pid < 1 || !/^\d+$/.test(req.params.pid)) {
       throw new ApiError(400, 'pid must be an integer');
     }
     const errors = validateProductBody(req.body, { partial: true });
@@ -110,7 +116,7 @@ router.delete(
   '/products/:pid',
   asyncHandler(async (req, res) => {
     const pid = Number(req.params.pid);
-    if (!Number.isInteger(pid)) {
+    if (!Number.isSafeInteger(pid) || pid < 1 || !/^\d+$/.test(req.params.pid)) {
       throw new ApiError(400, 'pid must be an integer');
     }
     const product = await Product.findOneAndDelete({ pid });

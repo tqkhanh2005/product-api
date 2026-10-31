@@ -1,11 +1,21 @@
 # --- deps stage: install only production dependencies ---
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
+FROM node:22-alpine AS test
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY src ./src
+COPY tests ./tests
+COPY jest.config.js .eslintrc.json ./
+ENV NODE_ENV=test
+CMD ["npm", "run", "test:integration"]
+
 # --- runtime stage ---
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 

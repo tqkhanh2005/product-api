@@ -1,4 +1,4 @@
-version: "3.9"
+name: product-api
 
 services:
   nammongodb:
@@ -29,8 +29,10 @@ services:
       - .env
     environment:
       MONGO_URI: mongodb://nammongodb:27017/product-api
+      PORT: 3000
+      NODE_ENV: production
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${HOST_PORT:-3000}:3000"
     depends_on:
       nammongodb:
         condition: service_healthy
@@ -42,6 +44,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  tests:
+    profiles: [test]
+    build:
+      context: .
+      target: test
+    environment:
+      NODE_ENV: test
+      MONGO_URI: mongodb://nammongodb:27017/product-api-test
+    networks: [product-net]
+    depends_on:
+      nammongodb:
+        condition: service_healthy
 
 networks:
   product-net:

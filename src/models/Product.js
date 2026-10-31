@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const Counter = mongoose.model('Counter', new Schema({ _id: String, value: { type: Number, required: true } }, { versionKey: false }));
 
 /**
  * Product schema — required fields per Prompt 1: pid, pname, price, quantity.
@@ -12,6 +13,8 @@ const productSchema = new Schema(
     pid: {
       type: Number,
       required: true,
+      min: 1,
+      validate: { validator: Number.isSafeInteger, message: 'pid must be a positive safe integer' },
     },
     pname: {
       type: String,
@@ -30,7 +33,7 @@ const productSchema = new Schema(
       required: [true, 'quantity is required'],
       min: [0, 'quantity must be >= 0'],
       validate: {
-        validator: Number.isInteger,
+        validator: Number.isSafeInteger,
         message: 'quantity must be an integer',
       },
     },
@@ -40,10 +43,20 @@ const productSchema = new Schema(
 
 productSchema.index({ pid: 1 }, { unique: true });
 
-// Auto-assign the next pid on creation if not explicitly given.
+// Indexed single-document counter: parallel creates never select the same next id.
+// Advance past existing/explicit ids as well, preserving compatibility with old data.
+productSchema.statics.advancePid = async function advancePid(value) {
+  try { await Counter.findOneAndUpdate({ _id: 'product' }, { $max: { value } }, { upsert: true, new: true }); }
+  catch (e) {
+    if (e.code !== 11000) throw e;
+    await Counter.findOneAndUpdate({ _id: 'product' }, { $max: { value } });
+  }
+};
 productSchema.statics.getNextPid = async function getNextPid() {
   const last = await this.findOne().sort({ pid: -1 }).select('pid').lean();
-  return last ? last.pid + 1 : 1;
+  await this.advancePid(last ? last.pid : 0);
+  const counter = await Counter.findOneAndUpdate({ _id: 'product' }, { $inc: { value: 1 } }, { new: true });
+  return counter.value;
 };
 
 productSchema.methods.toJSON = function toJSON() {
